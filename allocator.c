@@ -22,7 +22,9 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <limits.h>
 
+// #include "linked_list_util.h" // TODO: find a way to split this into own file
 #include "allocator.h"
 #include "logger.h"
 
@@ -33,12 +35,111 @@ static struct mem_block *g_tail = NULL;
 
 static unsigned long g_allocations = 0; /*!< Allocation counter */
 static unsigned long g_regions = 0; /*!< Allocation counter */
-
+static int counter = 0;
 pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER; /*< Mutex for protecting the linked list */
+
+void ll_log_block(struct mem_block *block);
 
 size_t get_aligned_size(size_t total_size)
 {
     return total_size % BLOCK_ALIGN == 0 ? total_size : total_size + (BLOCK_ALIGN - (total_size % BLOCK_ALIGN));
+}
+
+size_t get_region_size(size_t real_size) {
+
+    int page_size = getpagesize();
+    size_t num_pages = real_size / page_size;
+
+    if (real_size % page_size != 0) {
+        num_pages++;
+    }
+
+    size_t region_size = page_size * num_pages;
+    LOG("Page size * num_pages; %d * %zu\n", page_size, num_pages);
+
+    LOG("New region - size: %zu (%zu region(s))\n", region_size, num_pages);
+
+    return region_size;
+}
+
+void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
+{
+    LOGP("STARTING LL_ADD\n");
+
+    struct mem_block *next_block = prev_block->next;
+    //ll_log_block(new_block);
+    //ll_log_block(prev_block);
+
+    if (new_block == prev_block->next) {
+        return;
+    }
+
+    if (prev_block != NULL && new_block != NULL) {
+        prev_block->next = new_block;
+        new_block->prev = prev_block;
+
+    }
+
+    if (new_block != NULL && next_block != NULL) {
+        next_block->prev = new_block;
+        new_block->next = next_block;
+    }
+
+    /*
+    LOGP("DONE:\n");
+    ll_log_block(new_block);
+    */
+
+/*
+    if (prev_block == NULL || new_block == NULL) {
+        LOGP("ERROR - prev or new block is NULL - RETURNING\n");
+        return;
+    }
+
+    // If new_block is already in the list, do nothing
+    if (new_block == prev_block->next) {
+        return;
+    }
+    struct mem_block* temp = prev_block->next;
+
+
+    LOG("STATS:\n"
+        "\tPREV BLOCK: %p <----- %p -----> %p (also temp)\n"
+        "\tNEW_BLOCK: %p <----- %p -----> %p\n",
+        prev_block->prev, prev_block, prev_block->next,
+        new_block->prev, new_block, new_block->next);
+
+
+
+
+    prev_block->next = new_block;
+    new_block->prev = prev_block;
+
+  
+    
+    if (temp != NULL) {
+        new_block->next = temp;
+        temp->prev = new_block;
+    }
+ */
+    //LOG("FROM ll_add - NEW BLOCK AFTER (prev this and next): %p <----- %p -----> %p\n", new_block->prev, new_block, new_block->next);
+
+
+}
+
+void ll_log_block(struct mem_block *block) {
+
+    if (block == NULL) {
+        LOGP("NULL BLOCK\n");
+        return;
+    }
+    LOG(" %p <----- %p -----> %p\n", block->prev, block, block->next);
+
+    LOG(" '%s' <----- '%s' -----> '%s'\n",
+        block->prev != NULL ? block->prev->name : "NULL BLOCK",
+        block->name,
+        block->next != NULL ? block->next->name: "NULL BLOCK");
+    LOGP("\n");
 }
 
 
@@ -56,19 +157,59 @@ size_t get_aligned_size(size_t total_size)
  */
 struct mem_block *split_block(struct mem_block *block, size_t size)
 {
-    // TODO: Maybe should align this, too
-    size_t min_size = sizeof(struct mem_block) + BLOCK_ALIGN; // Should be 108
 
-    if (size < min_size) {
+    // Note: size is actual real size (including header)
+    LOGP("SPLITTING BLOCK\n");
+
+    size_t min_sz = sizeof(struct mem_block) + BLOCK_ALIGN;
+    LOG("STATS:\n"
+        "\t->block is null? %d\n"
+        "\t->size: %zu\n"
+        "\t->min size: %zu\n",
+        block == NULL, size, min_sz);
+
+    LOG("Must all be 0 (false):\n"
+        "\t-> size < min_sz: %d\n"
+        "\t->block == NULL: %d\n"
+        "\t->!block->free: %d\n",
+        size < min_sz, block == NULL, !block->free);
+
+    if (size < min_sz || block == NULL || !block->free) {
+        LOGP("INVALID - RETURNING NULL\n");
         return NULL;
     }
-    if (block == NULL || !block->free) {
-        return NULL;
+
+    struct mem_block* leftover_data_header = (struct mem_block *) ( (char *)block + size  );
+
+    /* REGION: Init leftover_data_header */
+    leftover_data_header->free = true;
+   LOGP("BOOKMARK\n");
+   LOG("block->free: %d leftover_data_header->free: %d\n", block->free, leftover_data_header->free);
+   LOG("block->region_id: %lu leftover data header->region_id %lu\n", block->region_id, leftover_data_header->region_id);
+
+    leftover_data_header->region_id = block->region_id;
+    LOGP("DONE SETTING REGION_ID\n");
+
+    leftover_data_header->size = block->size - size;
+
+    LOGP("DONE INITALIZING DATA HEADER\n");
+
+    /* REGION: Change size of block */
+    block->size = size;
+
+    /* REGION: Update linked list and tail */
+    ll_add(block, leftover_data_header);
+    LOGP("DONE W/ LL_ADD\n");
+
+
+    if (block == g_tail) {
+        g_tail = leftover_data_header;
     }
 
 
-    // TODO block splitting algorithm
-    return NULL;
+    LOGP("RETURNING LEFTOVER DATA HEADER\n");
+    return leftover_data_header;
+
 }
 
 /**
@@ -94,8 +235,33 @@ struct mem_block *merge_block(struct mem_block *block)
  */
 void *first_fit(size_t size)
 {
-    // TODO: first fit FSM implementation
+
+    // Note: From Prof. Matthew: "If you get segfault here - probably something else is wrong"
+
+    LOGP("STARTING FIRST_FIT\n");
+    struct mem_block *current = g_head;
+
+    while (current != NULL) {
+
+
+
+        LOG("%p <----- %p -----> %p\n", current->prev, current, current->next);
+        LOG("'%s' <----- '%s' ['%s'] -----> '%s'\n",
+            current->prev != NULL ? current->prev->name : "NULL BLOCK",
+            current->name, current->free ? "FREE" : "USED",
+            current->next != NULL ? current->next->name : "NULL BLOCK");
+        LOG("SIZE %zu, CURRENT_SIZE %zu, SIZE < CURRENT->SIZE %d \n", size, current->size, size <= current->size);
+        
+        
+        if (size <= current->size && current->free) {
+            LOGP("FOUND FIT - RETURNING\n");
+            return current;
+        }
+        current = current->next;
+    }
+    LOGP("FOUND NO FIT - RETURNING\n");
     return NULL;
+
 }
 
 /**
@@ -108,8 +274,28 @@ void *first_fit(size_t size)
  */
 void *worst_fit(size_t size)
 {
-    // TODO: worst fit FSM implementation
-    return NULL;
+    struct mem_block *current = g_head;
+    struct mem_block *worst = NULL;
+
+    size_t worst_delta = 0;
+
+    while (current != NULL) {
+        if (size <= current->size && current->free) {
+
+            ssize_t diff = abs((ssize_t)size - (ssize_t)current->size);
+
+            if (diff > worst_delta) {
+                worst = current;
+                worst_delta = diff;
+            }
+
+
+
+        } 
+        current = current->next;
+    }
+
+    return worst;
 }
 
 /**
@@ -123,6 +309,42 @@ void *worst_fit(size_t size)
 void *best_fit(size_t size)
 {
     // TODO: best fit FSM implementation
+    struct mem_block *current = g_head;
+    struct mem_block *best = NULL;
+
+    ssize_t best_delta = INT_MAX;
+
+    while (current != NULL) {
+        if (size <= current->size && current->free) {
+
+            ssize_t diff = abs((ssize_t)size - (ssize_t)current->size);
+
+            if (diff < best_delta) {
+                best = current;
+                best_delta = diff;
+            }
+
+
+
+        } 
+        current = current->next;
+    }
+
+    return best;
+/*
+    struct mem_block *current = g_head;
+    struct mem_block *best = NULL;
+
+    size_t best_size = INT_MAX;
+
+    while (current != NULL) {
+
+
+        //ssize_t diff = (ssize_t) nums get difference between current block size and best block size here
+
+
+    }
+    */
     return NULL;
 }
 
@@ -131,69 +353,97 @@ void *reuse(size_t size)
     // TODO: using free space management (FSM) algorithms, find a block of
     // memory that we can reuse. Return NULL if no suitable block is found.
     // 
+    LOG("REAL SIZE IS %zu\n", size);
     char *algo = getenv("ALLOCATOR_ALGORITHM");
     if (algo == NULL) {
         algo = "first_fit";
     }
 
-    void* found = NULL;
+    struct mem_block* found = NULL;
+
+    LOGP("STARTING REUSE\n");
 
     if (strcmp(algo, "first_fit") == 0) {
+        LOGP("SHOULD DO FIRST_FIT HERE\n");
         found = first_fit(size);
+        
     } else if (strcmp(algo, "best_fit") == 0) {
         found = best_fit(size);
     } else if (strcmp(algo, "worst_fit") == 0) {
         found = worst_fit(size);
     }
 
+
+
     if (found != NULL) {
 
         // TODO: Adjust linked list? Update data struct? maybe? Set free to false? Split block?
-        // split_block(found, size);
+        struct mem_block* new_head = split_block(found, size); // Note - only split if you actually can split block
+
+        if (new_head != NULL) {
+            new_head->region_id = found->region_id;
+            new_head->free = true;
+            LOG("New head is %p\n", new_head);
+        }
+
+        found->free = false;
+
+        //LOG("FROM REUSE: %p <----- %p -----> %p\n", found->prev, found, found->next);
+        return found;
     }
     return NULL;
 }
 
 void *malloc(size_t size)
 {
+
+    LOG("MALLOC - G_TAIL IS %p '%s'\n", g_tail, g_tail != NULL ? g_tail->name : "NULL BLOCK");
     // TODO: allocate memory. You'll first check if you can reuse an existing
     // block. If not, map a new memory region.
 
     /* Lovingly ripped from lab code */
 
     // Have to make real_size divisible by 8, to comply w/ certain architectures
+
+    /* REGION: Get real size */
     size_t real_size = get_aligned_size(size + sizeof(struct mem_block));
+
     LOG("SIZES:\n"
         "\t->size = %zu\n"
         "\t->total size = %zu\n"
         "\t->aligned size = %zu\n",
         size, size + sizeof(struct mem_block), real_size);
 
-    LOG("ALLOCATING BLOCK - SIZE %zu\n", real_size);
 
 
 
+    /* REGION: REUSING A REGION */
+    // Error - not actually getting anything from reuse()???
     struct mem_block* reused_block = reuse(real_size);
+    //LOG("DONE REUSING - BLOCK IS NULL? '%s'\n", reused_block == NULL ? "NULL" : "EXISTS");
 
     if (reused_block != NULL) {
+
+        char *scribble = getenv("ALLOCATOR_SCRIBBLE");
+        LOG("SCRIBBLE IS: %c\n", scribble);
+
+        if (scribble != NULL && strcmp(scribble, "1") == 0) {
+            LOGP("SCRIBBLE IS 1 - setting data to 170\n");
+
+            memset(reused_block + 1, 170, real_size - sizeof(struct mem_block));
+        }
+
+       // LOG("USING REUSED BLOCK IN REGION %lu INSTEAD\n", reused_block->region_id);
         return reused_block + 1;
     }
 
-    int page_size = getpagesize();
-    size_t num_pages = real_size / page_size;
-
-    if (real_size % page_size != 0) {
-        num_pages++;
-    }
-
-    size_t region_size = page_size * num_pages;
-    LOG("Page size * num_pages; %d * %zu\n", page_size, num_pages);
-
-    LOG("New region - size: %zu (%zu region(s))\n", region_size, num_pages);
 
 
-    int prot_flags = PROT_READ | PROT_WRITE;
-    int map_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+
+    /* REGION: ALLOCATING A NEW REGION? */
+    size_t region_size = get_region_size(real_size);
+    const int prot_flags = PROT_READ | PROT_WRITE;
+    const int map_flags = MAP_PRIVATE | MAP_ANONYMOUS;
 
     struct mem_block *new_block
         = mmap(NULL, region_size, prot_flags, map_flags, -1, 0);
@@ -209,25 +459,89 @@ void *malloc(size_t size)
     }
     else {
 
-        new_block->prev = g_tail;
-        g_tail->next = new_block;
+        LOG("G_TAIL IS: %p '%s'\n", g_tail, g_tail != NULL ? g_tail->name : "NULL BLOCK");
+
+        ll_add(g_tail, new_block);
         g_tail = new_block;
 
+        LOG("NEW TAIL IS: '%s' <----- '%s'\n", g_tail->prev != NULL ? g_tail->prev->name : "NULL BLOCK", g_tail->name);
+        
+/*
+        LOG("STATS:\n"
+            "\t->G_TAIL: %p\n"
+            "\t->G_TAIL->NEXT",
+            g_tail = new_block);
+        */
     }
 
-    snprintf(new_block->name, 32, "Allocation %ld", g_allocations++);
-    new_block->free = true;
+    //snprintf(new_block->name, 32, "Allocation %ld", g_allocations++);
     new_block->region_id = g_regions++;
+    new_block->free = true;
     new_block->size = region_size;
     new_block->next = NULL;
+    
+    //LOGP("PRINTING STUFF\n");
 
     split_block(new_block, real_size);
     new_block->free = false;
 
-    LOGP("RETURNING\n");
 
+    //LOGP("RETURNING\n");
+/*
+        LOG("HEAD STATS:\n"
+        "\t->region_id: %lu\n"
+        "\t->free: '%s'\n"
+        "\t->size: %zu\n"
+        "\t %p <----- %p -----> %p\n"
+        "\t '%s' <----- '%s' -----> '%s'-----> '%s'\n",
+        new_block->region_id,
+        new_block->free ? "FREE" : "USED",
+        new_block->size,
+        new_block->prev, new_block, new_block->next,
+        new_block->prev != NULL ? new_block->prev->name : "NULL BLOCK",
+        new_block->name,
+        new_block->next != NULL ? new_block->next->name : "NULL BLOCK",
+        new_block->next != NULL && new_block->next->next != NULL ? new_block->next->next->name : "NULL BLOCK");
+*/
+     
+    char *scribble = getenv("ALLOCATOR_SCRIBBLE");
+
+    LOG("SCRIBBLE IS: %c\n", scribble);
+
+    if (scribble != NULL && strcmp(scribble, "1") == 0) {
+        LOGP("SCRIBBLE IS 1 - setting data to 170\n");
+
+        memset(new_block + 1, 170, real_size - sizeof(struct mem_block));
+    }
 
     return new_block + 1; // block is the memory header; block + 1 is the actual data
+}
+
+void *malloc_name(size_t size, char *name)
+{
+    void* block = malloc(size);
+
+    struct mem_block* head = (struct mem_block *)( (char*)block - 100 );
+    strcpy(head->name, name);
+
+        LOG("HEAD STATS:\n"
+        "\t->region_id: %lu\n"
+        "\t->free: '%s'\n"
+        "\t->size: %zu\n"
+        "\t %p <----- %p -----> %p\n"
+        "\t '%s' <----- '%s' -----> '%s'-----> '%s'\n",
+        head->region_id,
+        head->free ? "FREE" : "USED",
+        head->size,
+        head->prev, head, head->next,
+        head->prev != NULL ? head->prev->name : "NULL BLOCK",
+        head->name,
+        head->next != NULL ? head->next->name : "NULL BLOCK",
+        head->next != NULL && head->next->next != NULL ? head->next->next->name : "NULL BLOCK");
+
+
+
+    return block;
 }
 
 /* Copying extremely helpful diagram from class:
@@ -327,21 +641,25 @@ void print_memory(void)
     unsigned long current_region = 0;
     // TODO implement memory printout
 
+    int counter = 0;
     while (current_block != NULL) {
 
         
         // If in new region, print out region string
         if (current_block ->region_id != current_region || current_block == g_head) {
-            printf("[REGION %d] %p \n", current_block->region_id, current_block);
+            printf("[REGION %lu] %p \n", current_block->region_id, current_block);
+            current_region = current_block->region_id;
              
         }
 
-        printf("    [BLOCK] %p-%p '%s' %zu [%s]\n",
+        printf("    [BLOCK] %p-%p in region %lu '%s' %zu [%s] -> %p\n",
                 current_block,
-                (char *)current_block + current_block->size, // do (char *) instead of (void *) b/c char * does 1 byte, whereas void * is undefined/platform-specific
-                current_block->name,
+                (struct mem_block *) ( (char *)current_block + current_block->size ), // do (char *) instead of (void *) b/c char * does 1 byte, whereas void * is undefined/platform-specific
+                current_block->region_id,
+                current_block->name != NULL ? current_block->name : "(NULL)",
                 current_block->size,
-                current_block->free ? "FREE" : "USED");   
+                current_block->free ? "FREE" : "USED",
+                current_block->next);   
 
         current_block = current_block->next;   
     }
