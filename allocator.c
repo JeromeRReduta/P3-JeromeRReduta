@@ -35,6 +35,10 @@ static struct mem_block *g_tail = NULL;
 static unsigned long g_regions = 0; /*!< Allocation counter */
 pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER; /*< Mutex for protecting the linked list */
 
+static int g_allocations = 0;
+
+static int counter =0;
+
 
 /* Func protoyptes */
 void ll_log_block(struct mem_block *block);
@@ -43,13 +47,16 @@ void ll_add(struct mem_block *prev_block, struct mem_block *new_block);
 void ll_delete(struct mem_block *block);
 
 bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor);
+
 int try_to_expand_block_into(struct mem_block *head, struct mem_block *next, size_t size);
 
 void *get_data_from_header(struct mem_block *header);
 struct mem_block *get_header_from_data(void *data);
+
 size_t get_diff(size_t first, size_t second);
 
 void scribble_if_requested(struct mem_block *block, size_t real_size);
+
 struct mem_block *map_new_region(size_t real_size);
 
 
@@ -154,27 +161,38 @@ size_t get_region_size(size_t real_size)
  */
 void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
 {
-    struct mem_block *next_block = NULL; 
 
-    if (new_block == NULL) {
+
+    sprintf(new_block->name, "New block %d", g_allocations + 1);
+    ll_log_block(prev_block);
+    ll_log_block(new_block);
+
+    LOGP("BOOKMARK\n");
+    struct mem_block *next_block = prev_block->next;
+
+    if (new_block == prev_block->next) {
+        LOGP("RETURNING\n");
         return;
     }
 
-    if (prev_block != NULL) {
-        next_block = prev_block->next;
-
-        if (new_block == next_block) {
-            return;
-        }
-
+    if (prev_block != NULL && new_block != NULL) {
         prev_block->next = new_block;
         new_block->prev = prev_block;
+
     }
 
-    if (next_block != NULL) {
+    if (new_block != NULL && next_block != NULL) {
         next_block->prev = new_block;
         new_block->next = next_block;
     }
+
+    LOGP("DONE\n");
+    ll_log_block(prev_block);
+
+
+
+
+
 }
 
 /**
@@ -414,17 +432,53 @@ size_t get_diff(size_t first, size_t second)
  */
 void *first_fit(size_t size)
 {
+    LOGP("START FIRST_FIT------------------------------------------------------------------\n");
     struct mem_block *current = g_head;
 
     while (current != NULL) {
         // Case: found match - return header
+
+        //ll_log_block(current);
+
+
+
+        LOG("%p ['%s'] -----> %p ['%s']\n", current, current->free ? "FREE" : "USED", current->next, current->next != NULL && current->next->free ? "FREE" : "USED OR NULL");
+
+        LOG("'%s' -----> '%s'\n", current->name, current->next != NULL ? current->next->name : "NULL BLOCK");
+
+        if (current->prev != NULL && current->prev->prev != NULL && current->prev->prev->prev != NULL) {
+           /*
+            LOG("STUUUUUUUUUUUUF: %p <-- %p <-- %p <-- %p\n", current->prev->prev->prev, current->prev->prev, current->prev, current);
+            LOG("STUUUUUUUUUUUUF: '%s' <-- '%s' <-- '%s' <-- '%s'\n", current->prev->prev->prev->name, current->prev->prev->name, current->prev->name, current->name);
+
+            LOG("BUT FORWARD NOW: %p --> %p --> %p --> %p\n",
+                current->prev->prev->prev, current->prev->prev->prev->next, current->prev->prev->prev->next->next, current->prev->prev->prev->next->next->next);
+
+            LOG("BUT FORWARD NOW: '%s' --> '%s' --> '%s' --> '%s'\n________________________________________________________________________________________________________________________________________________________________\n",
+                current->prev->prev->prev->name, current->prev->prev->prev->next->name, current->prev->prev->prev->next->next->name, current->prev->prev->prev->next->next->next->name);
+        
+            LOGP("PREV->PREV->PREV\n");
+            ll_log_block(current->prev->prev->prev);
+
+            LOGP("PREV->-PREV\n");
+            ll_log_block(current->prev->prev);
+
+            LOGP("PREV->PREV->PREV->NEXT\n");
+            ll_log_block(current->prev->prev->prev->next);
+*/
+        }
+
+
+   
         if (size <= current->size && current->free) {
+            LOGP("DONE FIRST_FIT------------------------------------------------------------------\n");
             return current;
         }
 
         current = current->next;
     }
     // Case: no match - return NULL
+    LOGP("DONE FIRST_FIT------------------------------------------------------------------\n");
     return NULL;
 }
 
@@ -548,7 +602,7 @@ void *reuse(size_t size)
         if (new_head != NULL) {
             new_head->region_id = found->region_id;
             new_head->free = true;
-            ll_add(found, new_head);
+            //ll_add(found, new_head);
         }
 
         found->free = false;
@@ -568,7 +622,7 @@ void *reuse(size_t size)
  */
 void *malloc(size_t size)
 {
-    pthread_mutex_lock(&alloc_mutex);
+    //pthread_mutex_lock(&alloc_mutex);
     /* Lovingly ripped from lab code */
 
 
@@ -580,8 +634,11 @@ void *malloc(size_t size)
     struct mem_block* reused_block = reuse(real_size);
 
     if (reused_block != NULL) {
+        LOGP("ba\n");
+        sprintf(reused_block->name, "Allocation %d", g_allocations++);
         scribble_if_requested(reused_block, real_size);
-        pthread_mutex_unlock(&alloc_mutex);
+        //pthread_mutex_unlock(&alloc_mutex);
+
         return reused_block + 1;
     }
 
@@ -599,6 +656,7 @@ void *malloc(size_t size)
     else {
         ll_add(g_tail, new_block);
         g_tail = new_block;
+        g_tail->next = NULL;
     }
 
     new_block->region_id = g_regions++;
@@ -610,7 +668,8 @@ void *malloc(size_t size)
     new_block->free = false;
 
     scribble_if_requested(new_block, real_size);
-    pthread_mutex_unlock(&alloc_mutex);
+    sprintf(new_block->name, "Allocation %d", g_allocations++);
+    //pthread_mutex_unlock(&alloc_mutex);
     return new_block + 1; // block is the memory header; block + 1 is the actual data
 }
 
@@ -689,7 +748,7 @@ struct mem_block *map_new_region(size_t real_size)
  */
 void free(void *ptr)
 {
-    pthread_mutex_lock(&alloc_mutex);
+    //pthread_mutex_lock(&alloc_mutex);
     if (ptr == NULL) {
         pthread_mutex_unlock(&alloc_mutex);
         return;
@@ -705,7 +764,7 @@ void free(void *ptr)
         munmap(block, block->size);
     }
 
-    pthread_mutex_unlock(&alloc_mutex);
+    //pthread_mutex_unlock(&alloc_mutex);
 }
 
 
@@ -739,6 +798,7 @@ void *calloc(size_t nmemb, size_t size)
  */
 void *realloc(void *ptr, size_t size)
 {
+    LOGP("REALLOC CALLED\n");
     // Case: ptr is NULL - do malloc(size)
     if (ptr == NULL) {
         return malloc(size);

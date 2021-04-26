@@ -1,7 +1,7 @@
 lib=allocator.so
 
 # Set the following to '0' to disable log messages:
-LOGGER ?= 0
+LOGGER ?= 1
 
 CFLAGS += -Wall -g -pthread -fPIC -shared
 
