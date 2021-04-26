@@ -129,7 +129,7 @@ void ll_print(struct mem_block *head) {
 	struct mem_block* current = head;
 
 	while (current != NULL) {
-		printf("'%s' -> ", current->name);
+		ll_log_block(current);
 		current = current->next;
 	}
 	printf("'%s'\n", current);
@@ -179,10 +179,46 @@ void test_allocations_1() {
 	 * - f with worst fit
 	 */
 	void *g = malloc_name(10, "Test Allocation: 6");
+	void *h = malloc(5000);
 
+	ll_log_list();
 	print_memory();
 
 	return 0;
+}
+
+void test_ll_delete_with_blocks() {
+
+	struct mem_block a = {0};
+	strcpy(a.name, "A");
+	struct mem_block b = {0};
+	strcpy(b.name, "B");
+	struct mem_block c = {0};
+	strcpy(c.name, "C");
+
+	a.prev = NULL;
+
+
+	a.next = &b;
+	b.prev = &a;
+
+	b.next = &c;
+	c.prev = &b;
+
+	c.next = NULL;
+
+	LOGP("SANITY CHECK - LINKED LIST SHOULD BE: (NULL) --> A --> B --> C --> (NULL)\n");
+	ll_print(&a);
+
+	ll_delete(&b);
+
+	LOGP("SHOULD BE: (NULL) --> A --> C --> (NULL)\n");
+	ll_print(&a);
+
+	// TODO: Make test for actual malloc blocks
+
+
+
 }
 int main(void)
 {
@@ -192,5 +228,7 @@ int main(void)
 	//test_malloc_name();
 	//test_split();
 
-	test_allocations_1();
+	//test_allocations_1();
+
+	test_ll_delete();
 }

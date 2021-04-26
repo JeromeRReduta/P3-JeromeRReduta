@@ -39,6 +39,8 @@ static int counter = 0;
 pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER; /*< Mutex for protecting the linked list */
 
 void ll_log_block(struct mem_block *block);
+void ll_log_list();
+bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor);
 
 size_t get_aligned_size(size_t total_size)
 {
@@ -67,8 +69,8 @@ void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
     LOGP("STARTING LL_ADD\n");
 
     struct mem_block *next_block = prev_block->next;
-    //ll_log_block(new_block);
-    //ll_log_block(prev_block);
+    ll_log_block(new_block);
+    ll_log_block(prev_block);
 
     if (new_block == prev_block->next) {
         return;
@@ -85,10 +87,11 @@ void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
         new_block->next = next_block;
     }
 
-    /*
+    
     LOGP("DONE:\n");
     ll_log_block(new_block);
-    */
+    LOG("'%s' <-----\n",
+        new_block->prev->prev->name);
 
 /*
     if (prev_block == NULL || new_block == NULL) {
@@ -127,6 +130,26 @@ void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
 
 }
 
+void ll_delete(struct mem_block *block) {
+
+    struct mem_block* prev = block->prev;
+    struct mem_block* next = block->next;
+
+    // For now, not considering case: "deleting head" - may have to add this later
+    prev->next = next;
+
+    // Case: next exists - link next w/ prev
+    if (next != NULL) {
+        next->prev = prev;    
+    }
+
+    // Case: block was g_tail - make g_tail = prev
+    if (block == g_tail) {
+        g_tail = prev;
+    }
+    
+}
+
 void ll_log_block(struct mem_block *block) {
 
     if (block == NULL) {
@@ -139,7 +162,29 @@ void ll_log_block(struct mem_block *block) {
         block->prev != NULL ? block->prev->name : "NULL BLOCK",
         block->name,
         block->next != NULL ? block->next->name: "NULL BLOCK");
+
+    if (block->next != NULL && strcmp(block->next->name, "Test Allocation: 4") == 0) {
+        LOGP("4TH ALLOCATION DETECTED\n");
+        LOG("\t----->'%s'\n", block->next->next->name);
+    }
     LOGP("\n");
+}
+
+void ll_log_list() {
+
+    LOG("STARITNG FROM HEAD: %p '%s'------------------------------------------------------------------------------------------------->\n", g_head, g_head != NULL ? g_head->name : "NULL BLOCK");
+    struct mem_block *current = g_head;
+
+    while (current != NULL) {
+        /*
+        ll_log_block(current);
+        */
+
+
+        LOG("%p -----> %p\n", current, current->next);
+        LOG("'%s' -----> '%s'\n\n", current->name, current->next != NULL ? current->next->name : "NULL BLOCK");
+       current = current->next;
+    }
 }
 
 
@@ -179,18 +224,37 @@ struct mem_block *split_block(struct mem_block *block, size_t size)
         return NULL;
     }
 
+    if (block->size - size < min_sz) {
+        LOG("NEW BLOCK WOULD BE SIZE: %d - too small returning null\n", block->size - size);
+        return NULL;
+    }
+
+    LOGP("STARTING LEFTOVER_DATA_HEADER INIT\n");
     struct mem_block* leftover_data_header = (struct mem_block *) ( (char *)block + size  );
 
-    /* REGION: Init leftover_data_header */
-    leftover_data_header->free = true;
-   LOGP("BOOKMARK\n");
-   LOG("block->free: %d leftover_data_header->free: %d\n", block->free, leftover_data_header->free);
-   LOG("block->region_id: %lu leftover data header->region_id %lu\n", block->region_id, leftover_data_header->region_id);
 
+    /* REGION: Init leftover_data_header */
+
+    LOGP("SETTING FREE TO TRUE\n");
+    leftover_data_header->free = true;
+
+    LOGP("CHANGING PREV VALUE\n");
+    leftover_data_header->prev = NULL;
+
+    LOGP("CHANGING NEXT VALUE\n");
+    leftover_data_header->next = NULL;
+
+
+    LOGP("CHANGING REGION ID\n");
     leftover_data_header->region_id = block->region_id;
-    LOGP("DONE SETTING REGION_ID\n");
+    LOGP("BOOKMARK\n");
+    LOG("block->free: %d leftover_data_header->free: %d\n", block->free, leftover_data_header->free);
+    LOG("block->region_id: %lu leftover data header->region_id %lu\n", block->region_id, leftover_data_header->region_id);
 
     leftover_data_header->size = block->size - size;
+    if (leftover_data_header->size < 0) {
+        LOGP("WARNING - NEGATIVE SIZE\n");
+    }
 
     LOGP("DONE INITALIZING DATA HEADER\n");
 
@@ -200,14 +264,18 @@ struct mem_block *split_block(struct mem_block *block, size_t size)
     /* REGION: Update linked list and tail */
     ll_add(block, leftover_data_header);
     LOGP("DONE W/ LL_ADD\n");
+    ll_log_block(leftover_data_header);
 
 
     if (block == g_tail) {
         g_tail = leftover_data_header;
+        g_tail->next = NULL;
     }
 
 
     LOGP("RETURNING LEFTOVER DATA HEADER\n");
+
+
     return leftover_data_header;
 
 }
@@ -223,8 +291,44 @@ struct mem_block *split_block(struct mem_block *block, size_t size)
  */
 struct mem_block *merge_block(struct mem_block *block)
 {
-    // TODO block merging algorithm
-    return NULL;
+    struct mem_block* header = block;
+
+    if (blocks_can_merge(block, block->next)) {
+        block->size += block->next->size;
+        ll_delete(block->next);
+    }
+
+    if (blocks_can_merge(block, block->prev)) {
+        header = block->prev;
+        block->prev->size += block->size;
+        ll_delete(block);
+    }
+
+    return header;
+}
+
+/* Returns true if the following are true:
+    1. neighbor exists
+    2. neighbor and block have same region ids
+    3. block and neighbor are both free (will instantly return false if block is not free)
+
+    Else, returns false
+    */
+bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor) {
+
+    // Neighbor check
+    if (block->next != neighbor && block->prev != neighbor) {
+        LOGP("ERROR - NOT NEIGHBORS - RETURNING NULL\n");
+        return NULL;
+    }
+
+    if (!block->free) {
+        LOG("ERROR - USED BLOCK: '%s' - returning immediately\n", !block->free ? "USED" : "FREE");
+        return false;
+    }
+
+    return neighbor != NULL && block->region_id == neighbor->region_id && neighbor->free;
+
 }
 
 /**
@@ -243,8 +347,9 @@ void *first_fit(size_t size)
 
     while (current != NULL) {
 
+        //ll_log_block(current);
 
-
+/*
         LOG("%p <----- %p -----> %p\n", current->prev, current, current->next);
         LOG("'%s' <----- '%s' ['%s'] -----> '%s'\n",
             current->prev != NULL ? current->prev->name : "NULL BLOCK",
@@ -252,14 +357,13 @@ void *first_fit(size_t size)
             current->next != NULL ? current->next->name : "NULL BLOCK");
         LOG("SIZE %zu, CURRENT_SIZE %zu, SIZE < CURRENT->SIZE %d \n", size, current->size, size <= current->size);
         
-        
+  */      
         if (size <= current->size && current->free) {
-            LOGP("FOUND FIT - RETURNING\n");
             return current;
         }
         current = current->next;
     }
-    LOGP("FOUND NO FIT - RETURNING\n");
+
     return NULL;
 
 }
@@ -380,10 +484,18 @@ void *reuse(size_t size)
         // TODO: Adjust linked list? Update data struct? maybe? Set free to false? Split block?
         struct mem_block* new_head = split_block(found, size); // Note - only split if you actually can split block
 
+
         if (new_head != NULL) {
             new_head->region_id = found->region_id;
             new_head->free = true;
-            LOG("New head is %p\n", new_head);
+            LOG("NEW HEAD:\n"
+                "\t%p<----- %p -----> %p\n"
+                "\t'%s'<----- '%s' -----> '%s'\n",
+                new_head->prev, new_head, new_head->next,
+                new_head->prev->name, new_head->name, new_head->next->name);
+
+            ll_add(found, new_head);
+            
         }
 
         found->free = false;
@@ -396,8 +508,9 @@ void *reuse(size_t size)
 
 void *malloc(size_t size)
 {
-
-    LOG("MALLOC - G_TAIL IS %p '%s'\n", g_tail, g_tail != NULL ? g_tail->name : "NULL BLOCK");
+    LOGP("___________________STARTING MALLOC________________________\n");
+    LOG("ADDING ALLOCATION %d\n", g_allocations++);
+    LOG("MALLOC - G_TAIL IS %p '%s' -----> '%s'\n", g_tail, g_tail != NULL ? g_tail->name : "NULL BLOCK");
     // TODO: allocate memory. You'll first check if you can reuse an existing
     // block. If not, map a new memory region.
 
@@ -482,28 +595,12 @@ void *malloc(size_t size)
     
     //LOGP("PRINTING STUFF\n");
 
-    split_block(new_block, real_size);
+    struct mem_block *leftover_data_header = split_block(new_block, real_size);
+    LOGP("MALLOC - LEAVING SPLIT_BLOCK\n");
     new_block->free = false;
 
 
-    //LOGP("RETURNING\n");
-/*
-        LOG("HEAD STATS:\n"
-        "\t->region_id: %lu\n"
-        "\t->free: '%s'\n"
-        "\t->size: %zu\n"
-        "\t %p <----- %p -----> %p\n"
-        "\t '%s' <----- '%s' -----> '%s'-----> '%s'\n",
-        new_block->region_id,
-        new_block->free ? "FREE" : "USED",
-        new_block->size,
-        new_block->prev, new_block, new_block->next,
-        new_block->prev != NULL ? new_block->prev->name : "NULL BLOCK",
-        new_block->name,
-        new_block->next != NULL ? new_block->next->name : "NULL BLOCK",
-        new_block->next != NULL && new_block->next->next != NULL ? new_block->next->next->name : "NULL BLOCK");
-*/
-     
+
     char *scribble = getenv("ALLOCATOR_SCRIBBLE");
 
     LOG("SCRIBBLE IS: %c\n", scribble);
@@ -514,31 +611,26 @@ void *malloc(size_t size)
         memset(new_block + 1, 170, real_size - sizeof(struct mem_block));
     }
 
+/*
+    if (leftover_data_header->prev != NULL && leftover_data_header->prev->prev != NULL && leftover_data_header->prev->prev->prev != NULL && leftover_data_header->prev->prev->prev->prev != NULL) {
+     LOG("'%s'<------ '%s' <----- '%s' <----- '%s' <----- '%s' \n", leftover_data_header->prev->prev->prev->prev->name, leftover_data_header->prev->prev->prev->name, leftover_data_header->prev->prev->name, leftover_data_header->prev->name, leftover_data_header->name);
+    }
+*/
+    LOGP("RETURNING NEW_BLOCK + 1\n");
     return new_block + 1; // block is the memory header; block + 1 is the actual data
 }
 
 void *malloc_name(size_t size, char *name)
 {
+
+    LOG("________________ADDING ALLOCATION: '%s'________________________\n", name);
+
     void* block = malloc(size);
 
     struct mem_block* head = (struct mem_block *)( (char*)block - 100 );
     strcpy(head->name, name);
 
-        LOG("HEAD STATS:\n"
-        "\t->region_id: %lu\n"
-        "\t->free: '%s'\n"
-        "\t->size: %zu\n"
-        "\t %p <----- %p -----> %p\n"
-        "\t '%s' <----- '%s' -----> '%s'-----> '%s'\n",
-        head->region_id,
-        head->free ? "FREE" : "USED",
-        head->size,
-        head->prev, head, head->next,
-        head->prev != NULL ? head->prev->name : "NULL BLOCK",
-        head->name,
-        head->next != NULL ? head->next->name : "NULL BLOCK",
-        head->next != NULL && head->next->next != NULL ? head->next->next->name : "NULL BLOCK");
-
+    // ll_log_block(head);
 
 
     return block;
@@ -633,6 +725,7 @@ void *realloc(void *ptr, size_t size)
  */
 void print_memory(void)
 {
+
     puts("-- Current Memory State --");
     struct mem_block *current_block = g_head;
     // struct mem_block *current_region = NULL; ???
@@ -664,4 +757,12 @@ void print_memory(void)
         current_block = current_block->next;   
     }
 }
+
+
+
+
+
+
+
+
 

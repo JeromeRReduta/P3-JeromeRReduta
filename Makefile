@@ -5,7 +5,7 @@ LOGGER ?= 1
 
 CFLAGS += -Wall -g -pthread -fPIC -shared
 
-$(lib): allocator.c allocator.h logger.h
+$(lib): allocator.c allocator.h logger.h 
 	$(CC) $(CFLAGS) -DLOGGER=$(LOGGER) allocator.c -o $@
 
 docs: Doxyfile
