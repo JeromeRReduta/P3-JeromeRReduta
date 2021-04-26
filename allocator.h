@@ -25,6 +25,18 @@ void free(void *ptr);
 void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
 
+/* -- Linked List utility functions -- */
+
+void ll_log_block(struct mem_block *block);
+void ll_log_list();
+
+void ll_add(struct mem_block *prev_block, struct mem_block *new_block);
+void ll_delete(struct mem_block *block);
+bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor);
+
+void *get_data_from_header(struct mem_block *header);
+struct mem_block *get_header_from_data(void *data);
+
 /* -- Data Structures -- */
 
 /**
