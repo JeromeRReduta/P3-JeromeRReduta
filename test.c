@@ -187,6 +187,7 @@ void test_allocations_1() {
 	return 0;
 }
 
+// CONFIRMED SUCCESS
 void test_ll_delete_with_blocks() {
 
 	struct mem_block a = {0};
@@ -220,6 +221,237 @@ void test_ll_delete_with_blocks() {
 
 
 }
+
+// CONFIRMED SUCCESS
+void test_ll_delete_with_malloc() {
+	void *a = malloc_name(100, "A");
+	void *b = malloc_name(200, "B");
+	void *c = malloc_name(300, "C");
+	void *d = malloc_name(4096, "END OF LIST");
+	void *e = malloc_name(500, "E");
+
+	LOGP("SANITY CHECK - LINKED LIST SHOULD BE: (NULL) --> A --> B --> C --> E --> END OF LIST (NULL)\n");
+	ll_log_list();
+
+	free(b);
+	free(d);
+
+	LOGP("CHECK - LINKED LIST SHOULD BE UNCHANGED\n");
+	ll_log_list();
+
+	LOGP("DELETING B HEAD AND D HEAD \n");
+
+	ll_delete(get_header_from_data(b));
+	ll_delete(get_header_from_data(d));
+
+	LOGP("CHECK - LINKED LIST SHOULD BE: (NULL) --> A --> C --> E --> (NULL)\n");
+	ll_log_list();
+
+	LOGP("ATTEMPTING TO DELETE NULL - SHOULD RETURN ERROR MSG\n");
+	ll_delete(NULL);
+
+	LOGP("ATTEMPTING TO DELETE TAIL - SHOULD BE: (NULL) --> A --> C --> E --> ' ' --> (NULL) AND CHANGE TAIL\n");
+
+
+	struct mem_block *final_block_in_list = get_header_from_data(e)->next->next;
+	ll_delete(final_block_in_list);
+	ll_log_list();
+}
+
+void test_ll_delete_sole_block() {
+	void *a = malloc_name(100, "Only block");
+	LOGP("SANITY CHECK - WHAT IS LIST?\n");
+	ll_log_list();
+
+
+
+	struct mem_block* a_head = get_header_from_data(a);
+	struct mem_block* tail = get_data_from_header( a_head->next );
+
+	free(a);
+
+	LOGP("SANITY CHECK - ONLY BLOCK LEFT?\n");
+	ll_log_list();
+
+
+
+}
+
+/* CONFIRMED SUCCESS IN FOLLOWING CASES:
+	1. merging two valid blocks, with inputs in either order (true)
+	2. trying to merge free and used block (false)
+	3. trying to merge non-neighbors (error msg & false)
+	4. trying to merge blocks in diff regions (false)
+	5. trying to merge two used blocks (false)
+*/
+void test_blocks_can_merge_with_malloc() {
+
+	void *a = malloc_name(100, "A");
+	void *b = malloc_name(200, "B");
+	void *c = malloc_name(300, "C");
+	void *d = malloc_name(4096, "END OF LIST");
+	void *e = malloc_name(500, "E");
+
+	print_memory();
+
+
+	struct mem_block *a_head = get_header_from_data(a);
+	struct mem_block *b_head = get_header_from_data(b);
+	struct mem_block *c_head = get_header_from_data(c);
+	struct mem_block *d_head = get_header_from_data(d);
+	struct mem_block *e_head = get_header_from_data(e);
+	struct mem_block *end_of_region_0 = get_header_from_data(e)->next->next;
+
+
+	LOG("FREEING A AND B - SHOULD BE FALSE - a and b are both used: '%s'\n",
+		blocks_can_merge(a_head, b_head) ? "true" : "false");
+
+	LOGP("FREEING B AND C AND TRYING TO MERGE - SHOULD BE TRUE \n");
+
+	free(b);
+	free(c);
+
+
+	LOG("Can merge B and C? - SHOULD BE TRUE: '%s'\n", blocks_can_merge(b_head, c_head) ? "true" : "false");
+	
+	
+	LOG("Can merge C and E? - SHOULD BE FALSE - one is used: '%s'\n", blocks_can_merge(c_head, e_head) ? "true": "false");
+
+	free(e);
+
+	LOG("Can merge C and E now? - SHOULD NOW BE TRUE: '%s'\n", blocks_can_merge(c_head, e_head) ? "true" : "false");
+	LOG("What about putting in inputs backwards? - SHOULD BE TRUE: '%s'\n", blocks_can_merge(e_head, c_head) ? "true" : "false");
+
+	LOG("Can merge B and E? - SHOULD BE FALSE - not neighbors: '%s'\n", blocks_can_merge(b_head, e_head) ? "true" : "false");
+
+
+	free(d);
+	
+
+	
+	LOG("Can merge end of region 0 and end of list (different regions) - SHOULD BE FALSE '%s'\n", blocks_can_merge(end_of_region_0, d_head) ? "true" : "false");
+
+}
+
+/* Cases to test:
+	1. Head and next are used - should do nothing, return head
+	2. Head and next are freed - should merge, return head
+	3. Head is free, next (c) is used - should do nothing, return head
+	4. End of region 0 is free, thing after is free, but not in same region - should do nothing, return end of region 0
+	5. Merge tail and second to last - should merge and return second to last - should also change tail 
+	6. Free everything in region 0 - should all merge to head and return head
+	*/
+
+void test_merge_block() {
+
+	void *a = malloc_name(100, "A");
+	void *b = malloc_name(200, "B");
+	void *c = malloc_name(300, "C");
+	void *d = malloc_name(4096, "END OF LIST");
+	void *e = malloc_name(500, "E");
+
+	LOGP("SANITY CHECK - SHOULD BE (NULL) -> A -> B -> C -> E -> END OF LIST -> (NULL)\n");
+
+	ll_log_list();
+	print_memory();
+
+
+	struct mem_block *a_head = get_header_from_data(a);
+	struct mem_block *b_head = get_header_from_data(b);
+	struct mem_block *c_head = get_header_from_data(c);
+	struct mem_block *d_head = get_header_from_data(d);
+	struct mem_block *e_head = get_header_from_data(e);
+	struct mem_block *end_of_region_0 = get_header_from_data(d)->prev;
+
+	// Success
+	LOGP("Test 1. TRY TO MERGE HEAD - EVERYTHING IS USED - SHOULD DO NOTHING AND RETURN HEAD\n");
+
+	struct mem_block* should_be_a_head = merge_block(a_head);
+
+	LOG("Head SHOULD BE A: %p '%s'\n", should_be_a_head, should_be_a_head->name);
+	ll_log_list();
+
+	// Success
+	LOGP("Test 2. TRY TO MERGE HEAD - HEAD AND NEXT ARE FREE - SHOULD MERGE HEAD AND NEXT AND RETURN HEAD\n");
+
+	free(a);
+	free(b);
+
+	struct mem_block* merged_a_head = merge_block(a_head);
+	LOG("SHOULD BE MERGED A HEAD: %p '%s'\n", merged_a_head, merged_a_head->name);
+	ll_log_list();
+
+
+	// Success
+	LOGP("Test 3. TRY TO MERGE A AND C HEADS - SHOULD DO NOTHING B/C C USED\n");
+	struct mem_block* merged = merge_block(a_head);
+	LOG("SHOULD BE SAME AS A HEAD: %p '%s'\n", merged, merged->name);
+	ll_log_list();
+
+
+	// Success
+	LOGP("Test 4. End of region 0 is free, thing after is free, but not in same region"
+		" should not merge, should return end of region 0\n");
+
+	LOG("SANITY CHECK - REGION IDS ARE DIFF: '%s'\n", end_of_region_0->region_id != end_of_region_0->next->region_id ? "true" : "false");
+	free(get_data_from_header(end_of_region_0));
+	free(get_data_from_header(end_of_region_0->next));
+	LOGP("DOING STUFF NOW\n");
+	merged = merge_block(end_of_region_0);
+	LOG("SHOULD BE SAME AS END OF REGION 0: %p '%s'\n", merged, merged->name);
+	ll_log_list();
+
+	// Success
+	LOGP("Test 5. tail is freed, tail->prev is freed, merge(tail) - should merge tail and tail->prev,"
+		" should change tail value, and should return tail->prev");
+
+	struct mem_block* tail = d_head->next;
+
+	LOG("SANITY CHECK: TAIL->NEXT SHOULD BE NULL: %p\n", tail->next);
+
+	free( get_data_from_header(tail) );
+	free( get_data_from_header(tail->prev) );
+
+	struct mem_block* prev = tail->prev;
+	merged = merge_block(tail);
+
+	LOG("MERGED AND PREV SHOULD HAVE SAME ADDRESS: '%s'\n", merged == prev ? "true" : "false");
+	ll_log_list();
+	print_memory();
+
+
+	// Success
+	LOGP("6. FREE EVERYTHING IN REGION 0 - then merge w/ a until can't anymore - list should just be (NULL) --> A --> END OF LIST --> (NULL)\n");
+
+	struct mem_block* extra_block = e_head->next;
+	free(c);
+	free(e);
+	free( get_data_from_header(extra_block) );
+
+	LOGP("SANITY CHECK - EVERYTHING IN REGION 0 SHOULD BE FREE\n");
+	print_memory();
+
+	
+	for (int i = 0; i < 100; i++) { // should make sure that excess calls to merge() do nothing
+		merged = merge_block(a_head);
+
+	}
+
+	LOGP("LIST SHOULD BE A --> END OF LIST --> (NULL)\n");
+
+	//print_memory();
+
+	LOGP("GOOD\n");
+
+
+
+
+
+
+}
+
+// TODO: note: all the above functions were made when free() only set the header to free
+// (no unmapping yet) - these functions won't work unless unmapping is turned off
 int main(void)
 {
 
@@ -230,5 +462,11 @@ int main(void)
 
 	//test_allocations_1();
 
-	test_ll_delete();
+	//test_ll_delete_with_blocks();
+	//test_ll_delete_with_malloc();
+	
+	//test_blocks_can_merge_with_malloc();
+
+	//test_merge_block();
+	//test_ll_delete_sole_block();
 }

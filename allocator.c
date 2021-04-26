@@ -42,6 +42,46 @@ void ll_log_block(struct mem_block *block);
 void ll_log_list();
 bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor);
 
+void *get_data_from_header(struct mem_block *header);
+struct mem_block *get_header_from_data(void *data);
+
+bool is_only_block_in_region(struct mem_block *block) {
+
+    struct mem_block* prev = block->prev;
+    struct mem_block* next = block->next;
+
+    bool no_prev_neighbors = prev == NULL || prev->region_id != block->region_id;
+    bool no_next_neighbors = next == NULL || next->region_id != block->region_id;
+
+    LOG("Stats:\n"
+        "\t->block->prev: %p '%s'\n"
+        "\t->block->next: %p '%s\n",
+        prev, prev != NULL ? prev->name : "NULL BLOCK",
+        next, next != NULL ? next->name : "NULL BLOCK");
+
+    if (prev != NULL) {
+        LOG("DIFFERENT REGION IDS - PREV AND BLOCK? '%s'\n", 
+            prev->region_id != block->region_id ? "true" : "false");
+    }
+    if (next != NULL) {
+        LOG("DIFFERENT REGION IDS - BLOCK AND NEXT? '%s'\n",
+            next->region_id != block->region_id ? "true" : "false");
+    }
+
+    return no_prev_neighbors && no_next_neighbors;
+}
+
+void *get_data_from_header(struct mem_block *header) {
+    return header + 1;
+}
+
+struct mem_block *get_header_from_data(void *data) {
+
+    return (struct mem_block *)data - 1;
+}
+
+
+
 size_t get_aligned_size(size_t total_size)
 {
     return total_size % BLOCK_ALIGN == 0 ? total_size : total_size + (BLOCK_ALIGN - (total_size % BLOCK_ALIGN));
@@ -132,11 +172,22 @@ void ll_add(struct mem_block *prev_block, struct mem_block *new_block)
 
 void ll_delete(struct mem_block *block) {
 
+    if (block == NULL) {
+        LOGP("ERROR - GIVEN NULL BLOCK - RETURNING\n");
+        return;
+    }
+
     struct mem_block* prev = block->prev;
     struct mem_block* next = block->next;
 
-    // For now, not considering case: "deleting head" - may have to add this later
-    prev->next = next;
+    LOG("PREV: %p '%s'\n", prev, prev != NULL ? prev->name : "NULL BLOCK");
+    LOG("NEXT: %p '%s'\n", next, next != NULL ? next->name: "NULL BLOCK");
+
+    // Case: prev exists - link prev w/ next
+    if (prev != NULL) {
+        prev->next = next;    
+    }
+    
 
     // Case: next exists - link next w/ prev
     if (next != NULL) {
@@ -145,7 +196,22 @@ void ll_delete(struct mem_block *block) {
 
     // Case: block was g_tail - make g_tail = prev
     if (block == g_tail) {
+        LOGP("OLD TAIL:\n");
+        ll_log_block(g_tail);
         g_tail = prev;
+
+        LOGP("NEW TAIL:\n");
+        ll_log_block(g_tail);
+    }
+
+    // Case: block was g_head - make g_head = next
+    if (block == g_head) {
+        LOGP("OLD HEAD: \n");
+        ll_log_block(g_head);
+        g_head = next;
+
+        LOGP("NEW HEAD: \n");
+        ll_log_block(g_head);
     }
     
 }
@@ -291,19 +357,39 @@ struct mem_block *split_block(struct mem_block *block, size_t size)
  */
 struct mem_block *merge_block(struct mem_block *block)
 {
+
+    LOGP("BEGINNING MERGE\n");
     struct mem_block* header = block;
 
     if (blocks_can_merge(block, block->next)) {
+
+        LOG("CAN MERGE THIS BLOCK '%s' AND NEXT '%s'\n",
+            block->name, block->next->name);
+
+        LOG("OLD BLOCK SIZE: %zu NEXT BLOCK SIZE: %zu\n", block->size, block->next->size);
+
         block->size += block->next->size;
+
+        LOG("NEW BLOCK SIZE: %zu\n", block->size);
+
         ll_delete(block->next);
     }
 
     if (blocks_can_merge(block, block->prev)) {
+
+
+        LOG("CAN MERGE THIS BLOCK '%s' AND PREV '%s'\n",
+            block->name, block->prev->name);
         header = block->prev;
+
+        LOG("OLD PREV SIZE: %zu  BLOCK SIZE: %zu\n", block->prev->size, block->size);
         block->prev->size += block->size;
+
+        LOG("NEW PREV SIZE: %zu\n", block->prev->size);
         ll_delete(block);
     }
 
+    LOGP("ENDING MERGE\n");
     return header;
 }
 
@@ -323,9 +409,17 @@ bool blocks_can_merge(struct mem_block *block, struct mem_block *neighbor) {
     }
 
     if (!block->free) {
-        LOG("ERROR - USED BLOCK: '%s' - returning immediately\n", !block->free ? "USED" : "FREE");
+        LOG("ERROR - BLOCK IS USED: '%s' - returning immediately\n", !block->free ? "USED" : "FREE");
         return false;
     }
+
+    LOG("STATS: (assumed: block is not null, block and neighbor are actually neighbors)\n"
+        "\t->neighbor exists? '%s'\n"
+        "\t->same region id? '%s'\n"
+        "\t->neighbor is free? '%s'\n",
+        neighbor != NULL ? "true" : "false",
+        neighbor != NULL && block->region_id == neighbor->region_id ? "true" : "false",
+        neighbor != NULL && neighbor->free ? "true" : "false");
 
     return neighbor != NULL && block->region_id == neighbor->region_id && neighbor->free;
 
@@ -657,8 +751,15 @@ void free(void *ptr)
     }
 
     LOG("FREEING %p\n", ptr);
-    struct mem_block *block = (struct mem_block *) ptr - 1;
+    struct mem_block *block = get_header_from_data(ptr);
     block->free = true;
+
+    merge_block(block); // Attempt to merge block
+
+    if (is_only_block_in_region(block)) { // This should also handle g_head or g_tail change
+        ll_delete(block);
+        munmap(block, block->size);
+    }
 
     /* Commented all code out - so that free() code doesn't mess up any behavior
 
