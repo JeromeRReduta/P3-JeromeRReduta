@@ -2,26 +2,18 @@
 
 See: https://www.cs.usfca.edu/~mmalensek/cs326/assignments/project-3.html 
 
-To compile and use the allocator:
+This is a memory allocator, built from scratch.
+
+# Memory Allocator?
+
+In order for the computer to remember things, it maps info into certain regions of its physical memory. This is a very oversimplified view of what allocating memory is.
+
+This program is more or less a simple custom memory allocator. It maps memory to a file and unmaps as needed (except in the case of Linux utilities).
+
+
+# How to Compile and Use
 
 ```bash
 make
-LD_PRELOAD=$(pwd)/allocator.so ls /
-```
-
-(in this example, the command `ls /` is run with the custom memory allocator instead of the default).
-
-## Testing
-
-To execute the test cases, use `make test`. To pull in updated test cases, run `make testupdate`. You can also run a specific test case instead of all of them:
-
-```
-# Run all test cases:
-make test
-
-# Run a specific test case:
-make test run=4
-
-# Run a few specific test cases (4, 8, and 12 in this case):
-make test run='4 8 12'
+LD_PRELOAD=$(pwd)/allocator.so command_name
 ```
